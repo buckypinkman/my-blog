@@ -1,0 +1,18 @@
+{
+  "name": "my-blog",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun --smol src/server.ts",
+    "dev": "bun --watch src/server.ts",
+    "create-user": "bun scripts/create-user.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "highlight.js": "^11.12.0"
+  }
+}

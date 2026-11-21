@@ -1,0 +1,133 @@
+# Checks every push and pull request; deploys to the VPS on pushes to main.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST         server hostname or IP
+#   VPS_USER         SSH user that owns the app folder (e.g. "deploy")
+#   VPS_SSH_KEY      private key for that user (the matching public key is in its ~/.ssh/authorized_keys)
+#   VPS_KNOWN_HOSTS  output of `ssh-keyscan -p <port> <host>`, so the server's identity is verified
+#   VPS_PORT         optional, defaults to 22
+# Repository variable (optional):
+#   APP_DIR          app folder on the server, defaults to /opt/blog
+
+name: CI / Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: 1.4.4
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run typecheck
+
+      - name: Smoke test
+        env:
+          DB_PATH: ${{ runner.temp }}/ci-data/blog.sqlite
+          PORT: 3999
+          LOGIN_PATH: /ci-login
+        run: |
+          bun src/server.ts > "$RUNNER_TEMP/server.log" 2>&1 &
+          url=http://127.0.0.1:3999
+          for _ in $(seq 40); do curl -fs -o /dev/null "$url/" && break; sleep 0.25; done
+          status() { curl -s -o /dev/null -w '%{http_code}' "$url$1"; }
+
+          curl -fsS "$url/" | grep -q '<html'
+          curl -fsS "$url/sitemap.xml" | grep -q '<urlset'
+          curl -fsS "$url/feed.xml" | grep -q '<rss'
+          curl -fsS "$url/robots.txt" | grep -q 'Sitemap:'
+          test "$(status /ci-login)" = 200
+          test "$(status /login)" = 404
+          test "$(status /admin)" = 404
+          echo "Smoke test passed"
+
+      - name: Server log
+        if: always()
+        run: cat "$RUNNER_TEMP/server.log" || true
+
+  deploy:
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false # never interrupt a deploy halfway
+    env:
+      APP_DIR: ${{ vars.APP_DIR || '/opt/blog' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+        run: |
+          if [ -z "$SSH_KEY" ] || [ -z "$KNOWN_HOSTS" ] || [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ]; then
+            echo "::error::Set the VPS_HOST, VPS_USER, VPS_SSH_KEY and VPS_KNOWN_HOSTS secrets first."
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName $VPS_HOST
+            User $VPS_USER
+            Port $VPS_PORT
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      # data/ (database + uploaded images) and .env live only on the server and are never touched.
+      - name: Upload code
+        run: |
+          rsync -az --delete \
+            --exclude='.git/' --exclude='.github/' --exclude='node_modules/' \
+            --exclude='data/' --exclude='.env' \
+            ./ "vps:$APP_DIR/"
+
+      - name: Install dependencies and restart
+        run: |
+          ssh vps "APP_DIR='$APP_DIR' bash -s" <<'EOF'
+          set -euo pipefail
+          cd "$APP_DIR"
+          BUN="$(command -v bun || echo "$HOME/.bun/bin/bun")"
+          "$BUN" install --production --frozen-lockfile
+          sudo systemctl restart blog
+
+          port="$(grep -E '^PORT=' .env | cut -d= -f2 || true)"
+          for _ in $(seq 30); do
+            if curl -fsS -o /dev/null "http://127.0.0.1:${port:-3000}/"; then
+              echo "Blog is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Blog did not come back up:"
+          systemctl status blog --no-pager -n 40 || true
+          exit 1
+          EOF

@@ -1,0 +1,26 @@
+# /etc/systemd/system/blog.service
+[Unit]
+Description=Bun blog
+After=network.target
+
+[Service]
+Type=simple
+User=blog
+Group=blog
+WorkingDirectory=/opt/blog
+EnvironmentFile=/opt/blog/.env
+# Point at your bun binary (`which bun`). --smol makes Bun's GC run more often to keep RAM low.
+ExecStart=/usr/local/bin/bun --smol src/server.ts
+Restart=on-failure
+RestartSec=2
+
+# Hardening: app can only write its own data folder.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/blog/data
+MemoryMax=200M
+
+[Install]
+WantedBy=multi-user.target
