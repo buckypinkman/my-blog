@@ -9,3 +9,4 @@ async function load(name: string) {
 
 export const css = await load("style.css");
 export const adminJs = await load("admin.js");
+export const themeJs = await load("theme.js");

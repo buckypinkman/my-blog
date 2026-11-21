@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { adminJs, css } from "./assets";
+import { adminJs, css, themeJs } from "./assets";
 import * as auth from "./auth";
 import * as cfg from "./config";
 import { db } from "./db";
@@ -88,6 +88,7 @@ const server = Bun.serve({
   routes: {
     "/style.css": asset(css, "text/css"),
     "/admin.js": asset(adminJs, "text/javascript"),
+    "/theme.js": asset(themeJs, "text/javascript"),
     "/favicon.ico": new Response(null, { status: 204 }),
     "/robots.txt": () => text(seo.robots(), "text/plain", 86400),
     "/sitemap.xml": () => text(seo.sitemap(), "application/xml"),

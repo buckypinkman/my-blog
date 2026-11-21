@@ -1,4 +1,4 @@
-import { adminJs, css } from "./assets";
+import { adminJs, css, themeJs } from "./assets";
 import type { User } from "./auth";
 import * as cfg from "./config";
 import { html, jsonLd, raw, type Safe } from "./html";
@@ -67,9 +67,26 @@ ${m.article.tags.map((t) => html`<meta property="article:tag" content="${t}">`)}
   : ""}
 <link rel="alternate" type="application/rss+xml" title="${cfg.SITE_TITLE}" href="${abs("/feed.xml")}">
 <link rel="stylesheet" href="${css.url}">
+<script src="${themeJs.url}"></script>
 ${m.structured ? jsonLd(m.structured) : ""}
 ${m.adminScript ? html`<script src="${adminJs.url}" defer></script>` : ""}`;
 }
+
+const ICONS = {
+  system: `<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>`,
+  light: `<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>`,
+  dark: `<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>`,
+};
+
+// Hidden until theme.js runs, so visitors without JavaScript never see a control that does nothing.
+const THEME_SWITCH = html`<div id="theme-switch" class="theme-switch" role="group" aria-label="Color theme" hidden>
+  ${(["system", "light", "dark"] as const).map(
+    (t) => html`<button type="button" data-theme="${t}" aria-pressed="false" title="${t[0]!.toUpperCase() + t.slice(1)} theme">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${raw(ICONS[t])}</svg>
+      <span class="visually-hidden">${t[0]!.toUpperCase() + t.slice(1)}</span>
+    </button>`,
+  )}
+</div>`;
 
 function layout(meta: Meta, user: User | null, body: Safe) {
   return html`<!doctype html>
@@ -84,6 +101,7 @@ function layout(meta: Meta, user: User | null, body: Safe) {
       ? html`<a href="/admin">Dashboard</a><a href="/admin/new">New post</a>
         <form method="post" action="/logout"><button class="link">Log out</button></form>`
       : html`<a href="/tags">Tags</a><a href="/feed.xml">RSS</a>`}
+    ${THEME_SWITCH}
   </nav>
 </header>
 <main id="main">${body}</main>
@@ -133,10 +151,7 @@ export function home(user: User | null, posts: Post[], pageNum: number, hasNext:
         : undefined,
     },
     user,
-    html`<section class="intro">
-      <h1>${first ? cfg.SITE_TITLE : `${cfg.SITE_TITLE}: page ${pageNum}`}</h1>
-      ${first && cfg.SITE_DESCRIPTION ? html`<p>${cfg.SITE_DESCRIPTION}</p>` : ""}
-    </section>
+    html`<h1 class="visually-hidden">${first ? cfg.SITE_TITLE : `${cfg.SITE_TITLE}: page ${pageNum}`}</h1>
     ${postList(posts)}
     ${pager("/", pageNum, hasNext)}`,
   );
