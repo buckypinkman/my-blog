@@ -5,21 +5,23 @@ After=network.target
 
 [Service]
 Type=simple
-User=blog
-Group=blog
-WorkingDirectory=/opt/blog
-EnvironmentFile=/opt/blog/.env
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/blog
+# Bun loads /home/ubuntu/blog/.env on its own.
+# ~/.bun is read-only for the service (ProtectHome), so skip Bun's on-disk transpiler cache.
+Environment=BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
 # Point at your bun binary (`which bun`). --smol makes Bun's GC run more often to keep RAM low.
-ExecStart=/usr/local/bin/bun --smol src/server.ts
+ExecStart=/home/ubuntu/.bun/bin/bun --smol src/server.ts
 Restart=on-failure
 RestartSec=2
 
-# Hardening: app can only write its own data folder.
+# Hardening: the app can read its code but only write its own data folder.
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
+ProtectHome=read-only
 PrivateTmp=true
-ReadWritePaths=/opt/blog/data
+ReadWritePaths=/home/ubuntu/blog/data
 MemoryMax=200M
 
 [Install]

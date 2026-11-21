@@ -6,7 +6,7 @@ export const TRUST_PROXY = env.TRUST_PROXY === "1";
 
 /** Public origin used for canonical URLs, Open Graph, sitemap and RSS. No trailing slash. */
 export const SITE_URL = (env.SITE_URL ?? `http://${HOST}:${PORT}`).replace(/\/+$/, "");
-export const SITE_TITLE = env.BLOG_TITLE ?? "My Blog";
+export const SITE_TITLE = env.BLOG_TITLE ?? "rangga's blog";
 export const SITE_DESCRIPTION = env.BLOG_DESCRIPTION ?? "";
 export const SITE_LANG = env.SITE_LANG ?? "en";
 /** Shown as the author on posts and in structured data. Falls back to the username. */

@@ -67,70 +67,63 @@ Going over a limit returns `429` with a `Retry-After` header. A successful login
 
 ## Deploy to the VPS
 
-The server setup is nginx (HTTPS via Let's Encrypt) → Bun on `127.0.0.1:3000` → SQLite. The app runs under systemd as an unprivileged `blog` user. Deploys come from GitHub Actions over SSH, or you can run them by hand.
+The server setup is nginx (HTTPS via Let's Encrypt) → Bun on `127.0.0.1:3000` → SQLite. Everything runs as your `ubuntu` user from `/home/ubuntu/blog`. You deploy by hand with `rsync` from your machine.
 
-| Path on the VPS | Owner | Contents |
-| --- | --- | --- |
-| `/opt/blog` | `deploy` (your SSH user) | code, `node_modules`, `.env` |
-| `/opt/blog/data` | `blog` (service user) | `blog.sqlite`, `media/` (uploaded images) |
+In the commands below, replace `your-vps` with your server's IP or hostname.
 
-### 1. One-time server setup
+| Path on the VPS | Contents |
+| --- | --- |
+| `/home/ubuntu/blog` | code, `node_modules`, `.env` |
+| `/home/ubuntu/blog/data` | `blog.sqlite`, `media/` (uploaded images). Never overwritten by a deploy |
+
+### 1. Install nginx and certbot (once)
 
 ```bash
-# Packages (Debian/Ubuntu). Bun and sqlite3 are already installed.
-sudo apt install -y nginx certbot python3-certbot-nginx rsync curl
-
-# Users: "blog" runs the app, "deploy" uploads code (skip if you deploy as your own user)
-sudo useradd --system --home /opt/blog --shell /usr/sbin/nologin blog
-sudo adduser --disabled-password --gecos "" deploy
-
-# App folder
-sudo mkdir -p /opt/blog/data
-sudo chown deploy:deploy /opt/blog
-sudo chown blog:blog /opt/blog/data && sudo chmod 750 /opt/blog/data
+sudo apt update
+sudo apt install -y nginx certbot python3-certbot-nginx
+which bun     # should print /home/ubuntu/.bun/bin/bun
 ```
 
-Make sure `bun` is available system-wide, because the service runs as `blog`:
+If `which bun` prints a different path, change `ExecStart` in [`deploy/blog.service`](deploy/blog.service) to match.
+
+### 2. Upload the code and configure it (once)
+
+From your machine, in the project folder:
 
 ```bash
-which bun     # if it's under ~/.bun, copy it: sudo cp ~/.bun/bin/bun /usr/local/bin/bun
-```
-
-### 2. Config and first user
-
-Upload the code once from your machine. GitHub Actions takes over later, but its restart step needs the service from step 3 to exist first.
-
-```bash
-rsync -az --exclude .git/ --exclude .github/ --exclude node_modules/ --exclude data/ --exclude .env \
-  ./ deploy@your-vps:/opt/blog/
+rsync -az --exclude .git/ --exclude node_modules/ --exclude data/ --exclude .env ./ ubuntu@your-vps:blog/
 ```
 
 Then on the VPS:
 
 ```bash
-cd /opt/blog
+cd ~/blog
 bun install --production --frozen-lockfile
-cp .env.example .env && nano .env     # SITE_URL, BLOG_TITLE, LOGIN_PATH, TRUST_PROXY=1, COOKIE_SECURE=1
-bun -e 'console.log("/" + crypto.randomUUID().slice(0, 13))'   # a fresh LOGIN_PATH
-sudo chgrp blog .env && chmod 640 .env
-sudo -u blog bun run create-user admin
+mkdir -p data
+cp .env.example .env
+bun -e 'console.log("/" + crypto.randomUUID().slice(0, 13))'   # copy this into LOGIN_PATH
+nano .env       # set SITE_URL, BLOG_TITLE, LOGIN_PATH; keep TRUST_PROXY=1 and COOKIE_SECURE=1
+chmod 600 .env
+bun run create-user admin
 ```
 
-### 3. systemd service
+### 3. Run it as a service (once)
 
 ```bash
-sudo cp /opt/blog/deploy/blog.service /etc/systemd/system/blog.service   # check ExecStart matches `which bun`
+sudo cp ~/blog/deploy/blog.service /etc/systemd/system/blog.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now blog
-curl -I http://127.0.0.1:3000/                                          # expect 200
+curl -I http://127.0.0.1:3000/       # expect HTTP 200
 ```
 
-Logs: `journalctl -u blog -f`
+The blog now starts on boot and restarts itself if it crashes. Logs: `journalctl -u blog -f`
 
-### 4. nginx + HTTPS
+### 4. nginx + HTTPS (once)
+
+Point your domain's DNS A record at the VPS, then:
 
 ```bash
-sudo cp /opt/blog/deploy/nginx.conf /etc/nginx/sites-available/blog
+sudo cp ~/blog/deploy/nginx.conf /etc/nginx/sites-available/blog
 sudo nano /etc/nginx/sites-available/blog      # set server_name to your domain
 sudo ln -s /etc/nginx/sites-available/blog /etc/nginx/sites-enabled/blog
 sudo rm -f /etc/nginx/sites-enabled/default
@@ -140,59 +133,25 @@ sudo certbot --nginx -d blog.example.com        # gets the certificate and adds 
 
 Certbot renews certificates automatically. [`deploy/nginx.conf`](deploy/nginx.conf) forwards the `Host` and `X-Forwarded-For` headers. The app needs them for its CSRF check and the per-IP login rate limit, so keep `TRUST_PROXY=1` in `.env`. The config also allows uploads up to 25 MB and turns on gzip.
 
-Keep the app bound to `HOST=127.0.0.1` so it can only be reached through nginx.
+Keep `HOST=127.0.0.1` in `.env` so the app can only be reached through nginx.
 
-### 5. Automatic deploys with GitHub Actions
+Once the site is live, submit `https://your-domain/sitemap.xml` in Google Search Console and Bing Webmaster Tools.
 
-[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs on every push and pull request:
+### 5. Deploying updates
 
-- **check:** `bun install`, `bun run typecheck`, then starts the server and smoke-tests its main pages, the sitemap, the feed and the hidden login.
-- **deploy** (pushes to `main` only, after check passes):
-  - copies the code to the server with `rsync`. `data/` and `.env` on the server are never touched.
-  - runs `bun install --production` and `sudo systemctl restart blog`.
-  - waits until the blog responds, and shows the service status if it doesn't come back.
-
-One-time setup:
-
-1. Create an SSH key just for deploys (on your machine) and authorise it for `deploy`:
-   ```bash
-   ssh-keygen -t ed25519 -f blog_deploy_key -N "" -C "github-actions-deploy"
-   ssh-copy-id -i blog_deploy_key.pub deploy@your-vps
-   ```
-2. Let `deploy` restart the service without a password, and nothing else (check the path with `command -v systemctl`):
-   ```bash
-   echo 'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart blog' | sudo tee /etc/sudoers.d/blog-deploy
-   sudo chmod 440 /etc/sudoers.d/blog-deploy && sudo visudo -c
-   ```
-3. In GitHub, go to **Settings → Secrets and variables → Actions** and add these secrets:
-
-   | Secret | Value |
-   | --- | --- |
-   | `VPS_HOST` | server IP or hostname |
-   | `VPS_USER` | `deploy` |
-   | `VPS_SSH_KEY` | contents of `blog_deploy_key` (the private key) |
-   | `VPS_KNOWN_HOSTS` | output of `ssh-keyscan -p 22 your-vps` |
-   | `VPS_PORT` | optional, if SSH isn't on 22 |
-
-   Optionally, add a *variable* `APP_DIR` if the app isn't in `/opt/blog`.
-4. Push to `main`. You can also run the workflow by hand from the **Actions** tab (*Run workflow*).
-
-Delete the local `blog_deploy_key` files once the secret is saved. For extra safety you can add required reviewers to the `production` environment under **Settings → Environments**.
-
-### 6. Manual deploy (without GitHub)
+From your machine, in the project folder:
 
 ```bash
-# from your machine
-rsync -az --delete --exclude .git/ --exclude .github/ --exclude node_modules/ --exclude data/ --exclude .env \
-  ./ deploy@your-vps:/opt/blog/
-ssh deploy@your-vps 'cd /opt/blog && bun install --production --frozen-lockfile && sudo systemctl restart blog'
+rsync -az --delete --exclude .git/ --exclude node_modules/ --exclude data/ --exclude .env ./ ubuntu@your-vps:blog/
 ```
 
-### After the first deploy
+```bash
+ssh -t ubuntu@your-vps 'cd ~/blog && bun install --production --frozen-lockfile && sudo systemctl restart blog'
+```
 
-Submit `https://your-domain/sitemap.xml` in Google Search Console and Bing Webmaster Tools.
+`--delete` removes files on the server that you deleted locally. The `--exclude`d paths are never touched, so your database, images and `.env` are safe. Database upgrades run automatically when the service restarts.
 
-**Prefer Caddy?** [`deploy/Caddyfile`](deploy/Caddyfile) does the same job and handles HTTPS on its own. Use it instead of step 4.
+**Prefer Caddy?** [`deploy/Caddyfile`](deploy/Caddyfile) does the same job as nginx and handles HTTPS on its own. Use it instead of step 4.
 
 ## Database upgrades
 
@@ -203,8 +162,11 @@ The schema is versioned with `PRAGMA user_version`, and upgrades run automatical
 Back up both the database and the uploaded images:
 
 ```bash
-sqlite3 /opt/blog/data/blog.sqlite ".backup '/root/blog-$(date +%F).sqlite'"
-tar czf /root/blog-media-$(date +%F).tgz -C /opt/blog/data media
+mkdir -p ~/backups
+sqlite3 ~/blog/data/blog.sqlite ".backup '$HOME/backups/blog-$(date +%F).sqlite'"
+tar czf ~/backups/blog-media-$(date +%F).tgz -C ~/blog/data media
 ```
+
+To keep a copy off the server too, pull them to your machine: `rsync -az ubuntu@your-vps:backups/ ./backups/`
 
 `.backup` is safe while the server is running.
